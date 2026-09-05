@@ -28,11 +28,12 @@ Luego visita `http://localhost:3000`.
 
 ## Controles
 
-| Tecla     | Acción     |
-| --------- | ---------- |
-| `←` `→`   | Rotar nave |
-| `↑`       | Propulsar  |
-| `Espacio` | Disparar   |
+| Tecla     | Acción                          |
+| --------- | ------------------------------- |
+| `←` `→`   | Rotar nave                      |
+| `↑`       | Propulsar                       |
+| `Espacio` | Disparar                        |
+| `B`       | Activar Bomba Nova (si se tiene)|
 
 ## Puntuación
 
@@ -41,6 +42,18 @@ Luego visita `http://localhost:3000`.
 | Grande    | 20     |
 | Mediano   | 50     |
 | Pequeño   | 100    |
+
+## Power-ups
+
+Aparecen aleatoriamente (no todos en el mismo nivel); cada uno tiene un color propio para identificarlo a simple vista.
+
+| Power-up          | Color    | Efecto                                                                 |
+| ------------------ | -------- | ----------------------------------------------------------------------- |
+| Disparo Triple      | Cian     | Dispara 3 balas en abanico durante 10s                                  |
+| Escudo Temporal     | Azul     | Absorbe un impacto de asteroide; dura 5s o hasta recibir un golpe       |
+| Slow Motion         | Violeta  | Los asteroides se mueven a mitad de velocidad durante 6s                |
+| Bomba Nova          | Naranja  | Ítem de un solo uso: al presionar `B` destruye todos los asteroides en pantalla |
+| Hiperpropulsión     | Amarillo | Aceleración y velocidad máxima muy superiores durante 8s                |
 
 ## Características
 

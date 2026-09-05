@@ -28,6 +28,10 @@ const wrap  = (v, max) => ((v % max) + max) % max;
 const dist  = (a, b)   => Math.hypot(a.x - b.x, a.y - b.y);
 const rand  = (min, max) => min + Math.random() * (max - min);
 const randInt = (min, max) => Math.floor(rand(min, max + 1));
+const hexToRgba = (hex, alpha) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+};
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
@@ -62,12 +66,31 @@ const RADII  = [0, 16, 30, 50];   // por tamaño 1, 2, 3
 const SPEEDS = [0, 85, 55, 32];   // velocidad base por tamaño
 const POINTS = [0, 100, 50, 20];  // puntos por tamaño
 
-// ── Power-up: Disparo Triple ─────────────────────────────────────────────────
+// ── Power-ups ─────────────────────────────────────────────────────────────────
 const POWERUP_RADIUS       = 14;
 const POWERUP_SPAWN_MIN    = 15;   // seg. mínimo entre apariciones
 const POWERUP_SPAWN_MAX    = 25;   // seg. máximo entre apariciones
 const TRIPLE_SHOT_DURATION = 10;   // seg. de duración del efecto
 const TRIPLE_SHOT_SPREAD   = 0.22; // rad (~12.6°) entre disparos adyacentes
+const SHIELD_DURATION      = 5;    // seg. de duración del escudo (o hasta recibir un golpe)
+const SLOWMO_DURATION      = 6;    // seg. de duración del slow motion
+const SLOWMO_FACTOR        = 0.5;  // multiplicador de velocidad de los asteroides
+const HYPER_DURATION       = 8;    // seg. de duración de la hiperpropulsión
+const HYPER_THRUST_MULT    = 1.8;  // multiplicador de aceleración
+const HYPER_DRAG           = 0.995;// menor fricción → mayor velocidad máxima
+const HYPER_ROT_MULT       = 1.3;  // multiplicador de velocidad de giro
+const NOVA_FLASH_DURATION  = 0.3;  // seg. del destello al detonar la bomba nova
+
+const POWERUP_TYPES = ['triple', 'shield', 'slow', 'nova', 'hyper'];
+// Un color distinto por power-up para identificarlos de un vistazo, sin leer texto.
+const POWERUP_COLORS = {
+  triple: '#00ffff', // cian
+  shield: '#4da6ff', // azul
+  slow:   '#b388ff', // violeta
+  nova:   '#ff5533', // naranja/rojo
+  hyper:  '#ffee33', // amarillo
+};
+const randomPowerUpType = () => POWERUP_TYPES[randInt(0, POWERUP_TYPES.length - 1)];
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -140,6 +163,9 @@ class Ship {
     this.invincible      = 3;
     this.shootCooldown   = 0;
     this.tripleShotTimer = 0;
+    this.shieldTimer     = 0;
+    this.hyperTimer      = 0;
+    this.hasNovaBomb     = false;
     this.dead            = false;
   }
 
@@ -148,10 +174,13 @@ class Ship {
     if (this.invincible     > 0) this.invincible     -= dt;
     if (this.shootCooldown  > 0) this.shootCooldown  -= dt;
     if (this.tripleShotTimer > 0) this.tripleShotTimer -= dt;
+    if (this.shieldTimer     > 0) this.shieldTimer     -= dt;
+    if (this.hyperTimer      > 0) this.hyperTimer      -= dt;
 
-    const ROT   = 3.5;   // rad/s
-    const THRUST = 260;  // px/s²
-    const DRAG   = 0.987;
+    const hyperActive = this.hyperTimer > 0;
+    const ROT    = hyperActive ? 3.5 * HYPER_ROT_MULT    : 3.5;   // rad/s
+    const THRUST = hyperActive ? 260 * HYPER_THRUST_MULT : 260;   // px/s²
+    const DRAG   = hyperActive ? HYPER_DRAG               : 0.987;
 
     if (keys['ArrowLeft'])  this.angle -= ROT * dt;
     if (keys['ArrowRight']) this.angle += ROT * dt;
@@ -215,6 +244,16 @@ class Ship {
       ctx.stroke();
     }
 
+    // Escudo temporal
+    if (this.shieldTimer > 0) {
+      const alpha = 0.45 + 0.25 * Math.sin(this.shieldTimer * 10);
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius + 9, 0, Math.PI * 2);
+      ctx.strokeStyle = hexToRgba(POWERUP_COLORS.shield, alpha.toFixed(2));
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 }
@@ -251,11 +290,12 @@ class Particle {
   }
 }
 
-// ── Power-up: Disparo Triple ─────────────────────────────────────────────────
+// ── Power-ups ─────────────────────────────────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type) {
     this.x = x;
     this.y = y;
+    this.type = type;
     this.radius = POWERUP_RADIUS;
     this.dead = false;
     this.pulse = 0;
@@ -266,13 +306,14 @@ class PowerUp {
   }
 
   draw() {
+    const color = POWERUP_COLORS[this.type];
     const pulseScale = 0.8 + 0.2 * Math.sin(this.pulse * 4);
     const r = this.radius * 0.5 * pulseScale;
 
     ctx.save();
     ctx.translate(this.x, this.y);
-    ctx.strokeStyle = '#0ff';
-    ctx.fillStyle   = 'rgba(0, 255, 255, 0.15)';
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = hexToRgba(color, 0.15);
     ctx.lineWidth   = 1.5;
 
     ctx.beginPath();
@@ -280,12 +321,60 @@ class PowerUp {
     ctx.fill();
     ctx.stroke();
 
-    const fanAngles = [-TRIPLE_SHOT_SPREAD * 2, 0, TRIPLE_SHOT_SPREAD * 2];
-    for (const a of fanAngles) {
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-      ctx.lineTo(Math.cos(a) * this.radius, Math.sin(a) * this.radius);
-      ctx.stroke();
+    switch (this.type) {
+      case 'triple': {
+        const fanAngles = [-TRIPLE_SHOT_SPREAD * 2, 0, TRIPLE_SHOT_SPREAD * 2];
+        for (const a of fanAngles) {
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+          ctx.lineTo(Math.cos(a) * this.radius, Math.sin(a) * this.radius);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'shield': {
+        // Dos arcos enfrentados, como un anillo de energía partido
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius * 0.78, -0.6, 0.6);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius * 0.78, Math.PI - 0.6, Math.PI + 0.6);
+        ctx.stroke();
+        break;
+      }
+      case 'slow': {
+        // Carátula de reloj con manecillas
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius * 0.78, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -this.radius * 0.55);
+        ctx.moveTo(0, 0);
+        ctx.lineTo(this.radius * 0.4, 0);
+        ctx.stroke();
+        break;
+      }
+      case 'nova': {
+        // Estallido radial (estrella nova)
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 1.1, Math.sin(a) * r * 1.1);
+          ctx.lineTo(Math.cos(a) * this.radius, Math.sin(a) * this.radius);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'hyper': {
+        // Flecha/chevron indicando velocidad
+        ctx.beginPath();
+        ctx.moveTo(-this.radius * 0.3, -this.radius * 0.55);
+        ctx.lineTo(this.radius * 0.35, 0);
+        ctx.lineTo(-this.radius * 0.3, this.radius * 0.55);
+        ctx.stroke();
+        break;
+      }
     }
 
     ctx.restore();
@@ -299,6 +388,8 @@ let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 let powerUpTimer;           // cuenta regresiva hasta la próxima aparición de power-up
 let powerUpSpawnedThisLevel; // garantiza al menos una aparición por nivel
+let slowMoTimer;            // efecto global de Slow Motion sobre los asteroides
+let novaFlashTimer;         // destello visual al detonar la Bomba Nova
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -324,6 +415,8 @@ function initGame() {
   state  = 'playing';
   powerUpTimer = rand(POWERUP_SPAWN_MIN, POWERUP_SPAWN_MAX);
   powerUpSpawnedThisLevel = false;
+  slowMoTimer    = 0;
+  novaFlashTimer = 0;
   spawnAsteroids(4);
 }
 
@@ -332,10 +425,31 @@ function nextLevel() {
   bullets   = [];
   particles = [];
   powerUpSpawnedThisLevel = false;
-  const remainingTripleShot = ship.tripleShotTimer;
+  // Los efectos activos de la nave sobreviven al cambio de nivel
+  const { tripleShotTimer, shieldTimer, hyperTimer, hasNovaBomb } = ship;
   ship.reset();
-  ship.tripleShotTimer = remainingTripleShot;
+  Object.assign(ship, { tripleShotTimer, shieldTimer, hyperTimer, hasNovaBomb });
   spawnAsteroids(3 + level);
+}
+
+function applyPowerUp(type) {
+  switch (type) {
+    case 'triple': ship.tripleShotTimer = TRIPLE_SHOT_DURATION; break;
+    case 'shield': ship.shieldTimer     = SHIELD_DURATION;      break;
+    case 'slow':   slowMoTimer          = SLOWMO_DURATION;      break;
+    case 'nova':   ship.hasNovaBomb     = true;                 break;
+    case 'hyper':  ship.hyperTimer      = HYPER_DURATION;       break;
+  }
+}
+
+function detonateNovaBomb() {
+  ship.hasNovaBomb = false;
+  for (const a of asteroids) {
+    score += POINTS[a.size];
+    explode(a.x, a.y, a.size * 5);
+  }
+  asteroids = [];
+  novaFlashTimer = NOVA_FLASH_DURATION;
 }
 
 function explode(x, y, count = 8) {
@@ -367,7 +481,8 @@ function update(dt) {
     deadTimer -= dt;
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
-    asteroids.forEach(a => a.update(dt));
+    const deadAsteroidDt = slowMoTimer > 0 ? dt * SLOWMO_FACTOR : dt;
+    asteroids.forEach(a => a.update(deadAsteroidDt));
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
     return;
   }
@@ -377,18 +492,26 @@ function update(dt) {
     bullets.push(...ship.tryShoot());
   }
 
+  // Bomba Nova: uso único, destruye todos los asteroides en pantalla
+  if (pressed('KeyB') && ship.hasNovaBomb && asteroids.length > 0) {
+    detonateNovaBomb();
+  }
+
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
-  asteroids.forEach(a => a.update(dt));
+  const asteroidDt = slowMoTimer > 0 ? dt * SLOWMO_FACTOR : dt;
+  asteroids.forEach(a => a.update(asteroidDt));
   particles.forEach(p => p.update(dt));
 
   if (powerUp) powerUp.update(dt);
+  if (slowMoTimer    > 0) slowMoTimer    -= dt;
+  if (novaFlashTimer > 0) novaFlashTimer -= dt;
 
   // Aparición de power-up (solo si no hay uno activo/sin recoger)
   if (!powerUp) {
     powerUpTimer -= dt;
     if (powerUpTimer <= 0) {
-      powerUp = new PowerUp(rand(40, W - 40), rand(40, H - 40));
+      powerUp = new PowerUp(rand(40, W - 40), rand(40, H - 40), randomPowerUpType());
       powerUpTimer = rand(POWERUP_SPAWN_MIN, POWERUP_SPAWN_MAX);
       powerUpSpawnedThisLevel = true;
     }
@@ -417,7 +540,14 @@ function update(dt) {
   if (ship.invincible <= 0) {
     for (const a of asteroids) {
       if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
+        if (ship.shieldTimer > 0) {
+          // El escudo absorbe el impacto: la nave sobrevive, se consume el escudo
+          ship.shieldTimer = 0;
+          ship.invincible  = 0.6;
+          explode(ship.x, ship.y, 6);
+        } else {
+          killShip();
+        }
         break;
       }
     }
@@ -426,13 +556,13 @@ function update(dt) {
   // Nave vs power-up
   if (powerUp && !powerUp.dead && dist(ship, powerUp) < ship.radius + powerUp.radius) {
     powerUp.dead = true;
-    ship.tripleShotTimer = TRIPLE_SHOT_DURATION;
+    applyPowerUp(powerUp.type);
   }
   if (powerUp && powerUp.dead) powerUp = null;
 
   // Garantiza al menos una aparición de power-up por nivel
   if (asteroids.length === 0 && !powerUp && !powerUpSpawnedThisLevel) {
-    powerUp = new PowerUp(rand(40, W - 40), rand(40, H - 40));
+    powerUp = new PowerUp(rand(40, W - 40), rand(40, H - 40), randomPowerUpType());
     powerUpSpawnedThisLevel = true;
   }
 
@@ -471,11 +601,33 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
+  ctx.textAlign = 'left';
+  ctx.font = '13px monospace';
+  let hudY = 48;
   if (ship.tripleShotTimer > 0) {
-    ctx.fillStyle = '#0ff';
-    ctx.textAlign = 'left';
-    ctx.font = '13px monospace';
-    ctx.fillText(`TRIPLE ${ship.tripleShotTimer.toFixed(1)}s`, 14, 48);
+    ctx.fillStyle = POWERUP_COLORS.triple;
+    ctx.fillText(`TRIPLE ${ship.tripleShotTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 16;
+  }
+  if (ship.shieldTimer > 0) {
+    ctx.fillStyle = POWERUP_COLORS.shield;
+    ctx.fillText(`ESCUDO ${ship.shieldTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 16;
+  }
+  if (slowMoTimer > 0) {
+    ctx.fillStyle = POWERUP_COLORS.slow;
+    ctx.fillText(`SLOW-MO ${slowMoTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 16;
+  }
+  if (ship.hyperTimer > 0) {
+    ctx.fillStyle = POWERUP_COLORS.hyper;
+    ctx.fillText(`HIPERPROPULSIÓN ${ship.hyperTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 16;
+  }
+  if (ship.hasNovaBomb) {
+    ctx.fillStyle = POWERUP_COLORS.nova;
+    ctx.fillText('BOMBA NOVA LISTA [B]', 14, hudY);
+    hudY += 16;
   }
 }
 
@@ -498,6 +650,11 @@ function draw() {
   if (powerUp) powerUp.draw();
   bullets.forEach(b => b.draw());
   ship.draw();
+
+  if (novaFlashTimer > 0) {
+    ctx.fillStyle = hexToRgba('#ffffff', (novaFlashTimer / NOVA_FLASH_DURATION * 0.5).toFixed(2));
+    ctx.fillRect(0, 0, W, H);
+  }
 
   drawHUD();
 
